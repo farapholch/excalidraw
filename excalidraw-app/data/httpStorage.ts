@@ -33,9 +33,6 @@ const HTTP_STORAGE_BACKEND_URL = import.meta.env
   .VITE_APP_HTTP_STORAGE_BACKEND_URL;
 const SCENE_VERSION_LENGTH_BYTES = 4;
 
-// There is a lot of intentional duplication with the firebase file
-// to prevent modifying upstream files and ease futur maintenance of this fork
-
 const httpStorageSceneVersionCache = new WeakMap<Socket, number>();
 
 export const isSavedToHttpStorage = (
@@ -47,8 +44,6 @@ export const isSavedToHttpStorage = (
 
     return httpStorageSceneVersionCache.get(portal.socket) === sceneVersion;
   }
-  // if no room exists, consider the room saved so that we don't unnecessarily
-  // prevent unload (there's nothing we could do at that point anyway)
   return true;
 };
 
@@ -59,8 +54,6 @@ export const saveToHttpStorage = async (
 ) => {
   const { roomId, roomKey, socket } = portal;
   if (
-    // if no room exists, consider the room saved because there's nothing we can
-    // do at this point
     !roomId ||
     !roomKey ||
     !socket ||
@@ -86,13 +79,17 @@ export const saveToHttpStorage = async (
       sceneVersion,
     );
     if (result) {
-      return null;
+      // PATCH: cache sätts bara efter PUT
+      console.debug("[httpStorage] Created new room, cache updated", {
+        roomId,
+        sceneVersion,
+      });
+      httpStorageSceneVersionCache.set(socket, sceneVersion);
+      return elements;
     }
     return false;
   }
 
-  // If room already exist, we compare scene versions to check
-  // if we're up to date before saving our scene
   const buffer = await getResponse.arrayBuffer();
   const sceneVersionFromRequest = parseSceneVersionFromRequest(buffer);
   if (sceneVersionFromRequest >= sceneVersion) {
@@ -116,10 +113,17 @@ export const saveToHttpStorage = async (
   );
 
   if (result) {
+    // PATCH: cache uppdateras endast efter lyckad PUT
+    console.debug("[httpStorage] PUT succeeded, cache updated", {
+      roomId,
+      sceneVersion,
+    });
     httpStorageSceneVersionCache.set(socket, sceneVersion);
     return elements;
+  } else {
+    console.warn("[httpStorage] PUT failed", { roomId, sceneVersion });
+    return false;
   }
-  return false;
 };
 
 export const loadFromHttpStorage = async (
@@ -138,10 +142,7 @@ export const loadFromHttpStorage = async (
     restoreElements(await getElementsFromBuffer(buffer, roomKey), null),
   );
 
-  if (socket) {
-    httpStorageSceneVersionCache.set(socket, getSceneVersion(elements));
-  }
-
+  // PATCH: cache sätts inte längre här
   return elements;
 };
 
@@ -149,7 +150,6 @@ const getElementsFromBuffer = async (
   buffer: ArrayBuffer,
   key: string,
 ): Promise<readonly ExcalidrawElement[]> => {
-  // Buffer should contain both the IV (fixed length) and encrypted data
   const sceneVersion = parseSceneVersionFromRequest(buffer);
   const iv = new Uint8Array(
     buffer.slice(
@@ -208,7 +208,6 @@ export const loadFilesFromHttpStorage = async (
   const loadedFiles: BinaryFileData[] = [];
   const erroredFiles = new Map<FileId, true>();
 
-  //////////////
   await Promise.all(
     [...new Set(filesIds)].map(async (id) => {
       try {
@@ -242,7 +241,6 @@ export const loadFilesFromHttpStorage = async (
       }
     }),
   );
-  //////
 
   return { loadedFiles, erroredFiles };
 };
@@ -255,7 +253,6 @@ const saveElementsToBackend = async (
 ) => {
   const { ciphertext, iv } = await encryptElements(roomKey, elements);
 
-  // Concatenate Scene Version, IV with encrypted data (IV does not have to be secret).
   const numberBuffer = new ArrayBuffer(4);
   const numberView = new DataView(numberBuffer);
   numberView.setUint32(0, sceneVersion, false);
